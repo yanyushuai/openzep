@@ -1,7 +1,9 @@
 import copy
 import json
 import logging
+import os
 import re
+import time
 from typing import get_origin
 from typing import Any
 
@@ -17,6 +19,16 @@ from graphiti_core.llm_client.openai_generic_client import (
 from graphiti_core.prompts.models import Message
 
 logger = logging.getLogger(__name__)
+
+# Qwen3-family reasoning models burn thousands of hidden chain-of-thought
+# tokens per structured call (~5x latency). Gateways backed by vLLM/SGLang
+# accept chat_template_kwargs to disable thinking; measured on this stack:
+# 13.3s -> 2.5s per extraction call with identical JSON output.
+_DISABLE_THINKING = os.getenv("LLM_DISABLE_THINKING", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 
 _SCHEMA_ERROR_STRONG_TOKENS = (
@@ -224,6 +236,12 @@ class CompatOpenAIGenericClient(OpenAIGenericClient):
 
         strict_schema: dict[str, Any] | None = None
         effective_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+        thinking_kwargs = (
+            {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+            if _DISABLE_THINKING
+            else {}
+        )
+        started = time.monotonic()
         try:
             response_format: dict[str, Any] = {"type": "json_object"}
             if response_model is not None:
@@ -243,6 +261,7 @@ class CompatOpenAIGenericClient(OpenAIGenericClient):
                 temperature=self.temperature,
                 max_tokens=effective_max_tokens,
                 response_format=response_format,  # type: ignore[arg-type]
+                **thinking_kwargs,
             )
         except openai.RateLimitError as exc:
             raise RateLimitError from exc
@@ -276,7 +295,18 @@ class CompatOpenAIGenericClient(OpenAIGenericClient):
                 temperature=self.temperature,
                 max_tokens=effective_max_tokens,
                 response_format={"type": "json_object"},  # type: ignore[arg-type]
+                **thinking_kwargs,
             )
+
+        usage = getattr(response, "usage", None)
+        logger.info(
+            "llm call: model=%s size=%s %.0fms prompt_tokens=%s completion_tokens=%s",
+            self.model or DEFAULT_MODEL,
+            getattr(model_size, "value", model_size),
+            (time.monotonic() - started) * 1000,
+            getattr(usage, "prompt_tokens", None),
+            getattr(usage, "completion_tokens", None),
+        )
 
         raw_content = response.choices[0].message.content or ""
         normalized = self._extract_json_text(raw_content)

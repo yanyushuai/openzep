@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import math
+import time
 from collections.abc import Iterable
 
 import openai
@@ -57,13 +58,26 @@ class CompatOpenAIEmbedder(OpenAIEmbedder):
     async def create(
         self, input_data: str | list[str] | Iterable[int] | Iterable[Iterable[int]]
     ) -> list[float]:
+        started = time.monotonic()
         try:
-            return await super().create(input_data)
+            result = await super().create(input_data)
+            logger.info(
+                "embed call: %.0fms",
+                (time.monotonic() - started) * 1000,
+            )
+            return result
         except (openai.NotFoundError, openai.BadRequestError):
             return self._fallback(input_data)
 
     async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
+        started = time.monotonic()
         try:
-            return await super().create_batch(input_data_list)
+            result = await super().create_batch(input_data_list)
+            logger.info(
+                "embed batch: %.0fms inputs=%d",
+                (time.monotonic() - started) * 1000,
+                len(input_data_list),
+            )
+            return result
         except (openai.NotFoundError, openai.BadRequestError):
             return [self._stable_embedding(text, self.config.embedding_dim) for text in input_data_list]

@@ -10,6 +10,7 @@ from routers import memory
 from routers import messages
 from routers import users
 from routers import graph
+from routers import batches
 from routers import facts
 
 
@@ -37,6 +38,7 @@ app.include_router(messages.router)
 app.include_router(users.router)
 app.include_router(users._compat_router)
 app.include_router(graph.router)
+app.include_router(batches.router)
 app.include_router(facts.router)
 
 

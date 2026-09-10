@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     llm_base_url: str
     llm_model: str
     llm_small_model: str | None = None
+    # Qwen3-family chain-of-thought switch, read by engine.compat_openai_client
+    llm_disable_thinking: bool = False
 
     # Embedder — defaults to same endpoint as LLM
     embedder_api_key: str | None = None

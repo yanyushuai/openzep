@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from graphiti_core.edges import EntityEdge
 from graphiti_core.errors import GroupsEdgesNotFoundError, GroupsNodesNotFoundError
 from graphiti_core.llm_client.errors import RateLimitError
@@ -132,6 +132,7 @@ async def _add_episode_bulk_resilient(
     ontology,
     *,
     attempt: int = 1,
+    errors: list[str] | None = None,
 ) -> None:
     try:
         await asyncio.wait_for(
@@ -161,6 +162,7 @@ async def _add_episode_bulk_resilient(
                 raw_episodes,
                 ontology,
                 attempt=attempt + 1,
+                errors=errors,
             )
             return
 
@@ -180,12 +182,14 @@ async def _add_episode_bulk_resilient(
                 body,
                 raw_episodes[:midpoint],
                 ontology,
+                errors=errors,
             )
             await _add_episode_bulk_resilient(
                 graphiti,
                 body,
                 raw_episodes[midpoint:],
                 ontology,
+                errors=errors,
             )
             return
 
@@ -220,6 +224,10 @@ async def _add_episode_bulk_resilient(
                     single_exc,
                     exc_info=True,
                 )
+                # The pipeline deliberately swallows per-episode failures; record
+                # them so batch callers can surface a truthful item status.
+                if errors is not None:
+                    errors.append(f"{raw_episode.name}: {single_exc}")
                 return
 
 
@@ -638,3 +646,24 @@ async def set_entity_types(body: EntityTypesRequest):
         "entity_type_count": len(compiled.entity_types),
         "edge_type_count": len(compiled.edge_types),
     }
+
+
+# ── graph.get ─────────────────────────────────────────────────────────────────
+#
+# Registered AFTER /graph/list-all so the concrete path wins; a path-param
+# route defined earlier would swallow it. Graphiti groups are implicit, so a
+# graph "exists" iff any node carries its group_id. MiroFish uses this only to
+# reconcile a lost graph.create reply — a 404 there means "create it again".
+
+@router.get("/graph/{graph_id}", response_model=GraphResponse)
+async def get_graph(graph_id: str, request: Request):
+    graphiti = get_graphiti(request)
+    res = await graphiti.driver.execute_query(
+        "MATCH (n) WHERE n.group_id = $gid RETURN count(n) AS c",
+        gid=graph_id,
+    )
+    records = getattr(res, "records", None) or []
+    count = _as_int(_record_get(records[0], "c")) if records else 0
+    if count == 0:
+        raise HTTPException(status_code=404, detail=f"graph {graph_id} not found")
+    return GraphResponse(graph_id=graph_id, name=graph_id, created_at=None)
